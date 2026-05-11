@@ -1,0 +1,153 @@
+# Power Distribution
+
+## 1. Overview
+
+Chronos requires a robust power delivery system that balances three competing needs:
+1.  **High Current:** The Headphone Amplifier can draw significant current (up to 500mA+ per channel) depending on the load.
+2.  **Ultra-Low Noise:** The Clock Module and DAC require "clean" power with minimal ripple to prevent audible hiss and jitter.
+3.  **Efficiency:** The battery must last for hours, so switching regulators are used where possible, but linear regulators (LDOs) are used for the most sensitive analog sections.
+
+The system uses a **Hierarchical Power Architecture**:
+-   **Level 1:** Battery → Main Board (Primary Regulation & Distribution)
+-   **Level 2:** Main Board → Modules (Rail Distribution via FFC)
+-   **Level 3:** Module → Local Components (Final Cleaning & Regulation)
+
+## 2. Power Sources & Primary Regulation
+
+### Battery Input
+-   **Type:** Li-Po (Lithium Polymer)
+-   **Nominal Voltage:** 3.7V (Single Cell) or 7.4V (Dual Cell)
+-   **Capacity:** TBD (Target: 2500mAh - 4000mAh)
+-   **Connector:** JST-PH 2.0mm or similar (Socketed for replacement)
+
+### Primary Regulation (Main Board)
+The Main Board houses the primary power management IC (PMIC) or discrete regulators to convert the battery voltage to the system rails.
+
+| Rail | Target Voltage | Max Current | Source | Regulator Type |
+| :--- | :--- | :--- | :--- | :--- |
+| **V_BAT** | 3.7V - 4.2V | 1A+ | Battery | Direct (for charging) |
+| **V_12V** | 12.0V | 1.5A | V_BAT | **Boost Converter** (Switching) |
+| **V_5V** | 5.0V | 1.0A | V_BAT | **Boost Converter** (Switching) |
+| **V_3.3V** | 3.3V | 1.0A | V_BAT | **Buck Converter** (Switching) |
+| **V_ANA** | 3.3V / 5V | 200mA | V_3.3V | **LDO** (Linear) |
+
+### Why This Mix?
+-   **Switching (Buck/Boost):** Used for high-current rails (12V, 5V, 3.3V) to maximize battery life. These are placed on the Main Board, far from the analog audio path.
+-   **Linear (LDO):** Used for the **V_ANA** rail. While less efficient, LDOs provide extremely low noise (ripple < 10µV), which is critical for the Clock and DAC modules.
+
+## 3. Module-Level Power Strategy
+
+To ensure isolation and modularity, **each module has its own local regulation**. The Main Board distributes raw rails, and the module cleans them for its specific needs.
+
+### 3.1 Compute Module (Digital)
+-   **Input:** 3.3V (from Main Board Buck)
+-   **Local Regulation:**
+    -   **RP2350 Core:** 1.2V (Generated internally by RP2350 SMPS).
+    -   **I/O Voltage:** 3.3V (Filtered by local LDO).
+    -   **Flash/EEPROM:** 3.3V (Filtered by local LDO).
+-   **Filtering:** Ferrite beads and 10µF/0.1µF capacitors on every power pin.
+
+### 3.2 Clock Module (Ultra-Low Noise)
+-   **Input:** 3.3V (from Main Board LDO rail `V_ANA`)
+-   **Local Regulation:**
+    -   **TCXO/OCXO:** 3.3V (Direct from LDO, no switching).
+    -   **Buffer:** 3.3V (Local LDO).
+-   **Critical Design:** The Clock Module must have **zero switching regulators** on board. The entire module runs on the cleanest possible rail.
+-   **Decoupling:** Multiple layers of decoupling (10µF, 1µF, 0.1µF) placed within 1mm of the TCXO pins.
+
+### 3.3 DAC Module (Mixed Signal)
+-   **Input:** 3.3V (Digital), 5V (Analog)
+-   **Local Regulation:**
+    -   **Digital Section:** 3.3V (Local LDO).
+    -   **Analog Section:** 5V (Local LDO, separate from Digital LDO).
+-   **Isolation:** The Digital and Analog LDOs are physically separated on the PCB. Their grounds meet only at the module's local star point.
+
+### 3.4 Amp Module (High Current)
+-   **Input:** 12V (or 5V depending on amp topology)
+-   **Local Regulation:**
+    -   **Amp Chip:** Direct from 12V rail (no local LDO needed for high voltage).
+    -   **Control Logic:** 3.3V (Local LDO derived from 12V or 5V).
+-   **Thermal:** Large copper pours and thermal vias to dissipate heat. The module may include a small fan or rely on the case as a heatsink.
+
+### 3.5 Radio Module (Optional)
+-   **Input:** 3.3V
+-   **Local Regulation:**
+    -   **ESP32:** 3.3V (Internal or local LDO).
+    -   **RF Section:** 3.3V (Filtered heavily to prevent noise coupling).
+
+### 3.6 I/O Module
+-   **Input:** 3.3V, 5V
+-   **Local Regulation:**
+    -   **SD Card:** 3.3V (or 1.8V if UHS-I, handled by SD controller).
+    -   **Display:** 3.3V (Logic) + 5V/12V (Backlight, if LED).
+    -   **Buttons:** 3.3V (Pull-up resistors).
+
+## 4. Power Distribution Network (PDN) Design
+
+### FFC Connector Pin Allocation
+Power pins are allocated generously to minimize voltage drop and inductance.
+
+| Module | FFC Pins | Power Allocation |
+| :--- | :--- | :--- |
+| **Compute** | 32 | 2x VCC, 4x GND |
+| **Clock** | 10 | 1x VCC, 2x GND |
+| **DAC** | 24 | 2x VCC (3.3V/5V), 4x GND |
+| **Amp** | 12 | 2x VCC (12V), 4x GND (Heavy gauge) |
+| **Radio** | 12 | 1x VCC, 2x GND |
+| **I/O** | 14 | 2x VCC (3.3V/5V), 3x GND |
+
+### Trace Widths & Copper Weight
+-   **Main Board:** 2oz (70µm) copper for power rails to handle high current with minimal voltage drop.
+-   **Module Boards:** 1oz (35µm) copper, with wide traces for power.
+-   **FFC Cables:** Selected for current rating (e.g., 1A per pin). Multiple ground pins in parallel reduce total resistance.
+
+### Decoupling Strategy
+Every chip on every module follows the "One Cap Per Pin" rule where possible:
+1.  **Bulk Capacitor:** 10µF - 100µF (Tantalum or Ceramic) near the module power input.
+2.  **Mid-Range:** 1µF - 4.7µF near groups of chips.
+3.  **High-Frequency:** 0.1µF (100nF) within 2mm of every VCC pin.
+4.  **Ultra-High-Frequency:** 10nF - 100pF for RF sections (Radio, Clock).
+
+## 5. Charging & Protection
+
+### Battery Charging
+-   **Controller:** TP4056 (or higher quality equivalent like MCP73831) on the Main Board.
+-   **Input:** USB-C (5V) for charging only.
+-   **Protection:**
+    -   **Over-charge:** Cut-off at 4.2V.
+    -   **Over-discharge:** Cut-off at 3.0V (via firmware or hardware monitor).
+    -   **Short Circuit:** Fuse or PTC resettable fuse on the battery line.
+    -   **Reverse Polarity:** Diode or MOSFET protection.
+
+### Power Sequencing
+The system must power up in a specific order to prevent latch-up:
+1.  **3.3V Rail** stabilizes first (Compute, I/O).
+2.  **12V Rail** stabilizes (Amp).
+3.  **Clock Module** powers up last (to ensure stable timing before DAC starts).
+*Implemented via firmware control of enable pins on the LDOs.*
+
+## 6. Efficiency & Battery Life Estimates
+
+| Component | Idle Current | Active Current (Playback) |
+| :--- | :--- | :--- |
+| **RP2350** | 5mA | 20mA |
+| **DAC** | 2mA | 15mA |
+| **Clock** | 1mA | 1mA |
+| **Amp (Idle)** | 5mA | 50mA (varies with volume/load) |
+| **Radio (Off)** | 0mA | 0mA |
+| **Radio (On)** | 10mA | 80mA |
+| **Display** | 2mA | 10mA |
+| **Total (Wired)** | **~15mA** | **~100mA** |
+| **Total (BT)** | **~25mA** | **~180mA** |
+
+*Estimates based on 3.7V battery:*
+-   **2500mAh Battery:** ~25 hours (Wired), ~14 hours (BT).
+-   **4000mAh Battery:** ~40 hours (Wired), ~22 hours (BT).
+
+## 7. Open Questions
+
+1.  **Battery Voltage:** Should we use a **Single Cell (3.7V)** or **Dual Cell (7.4V)**?
+    -   *Single Cell:* Simpler charging, smaller case, but requires a boost converter for the Amp (if it needs >5V).
+    -   *Dual Cell:* Higher efficiency for Amp, but larger case and more complex charging.
+2.  **Amp Topology Voltage:** Does the chosen Amp chip require 12V, or can it run on 5V? (Affects the need for a boost converter).
+3.  **Charging Port:** USB-C is standard, but does it need to support data (for firmware updates) or just power? (Data is handled via SD card, so USB-C can be power-only, simplifying the design).
